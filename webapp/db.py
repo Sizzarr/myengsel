@@ -20,10 +20,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class TokenCache(Base):
-    __tablename__ = "token_cache_v2"
+    __tablename__ = "token_cache_v3"
     
     number = Column(BigInteger, primary_key=True, index=True)
-    refresh_token = Column(String(500), nullable=False)
+    refresh_token = Column(Text, nullable=False)
     sub_id = Column(String(100))
     sub_type = Column(String(50))
     
