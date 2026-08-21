@@ -1,93 +1,51 @@
-# MYnyak Engsel Sunset
+# MYnyak Engsel (Sunset Web UI)
 
-![banner](bnr.png)
+A modern, fast, and secure Web UI client for an Indonesian mobile internet service provider.
+Originally a CLI application, this project has been completely overhauled into a **Serverless-ready Web Application** built with FastAPI and Vanilla JS.
 
-CLI client for a certain Indonesian mobile internet service provider.
+## 🌟 Fitur Utama
+- **Modern Glassmorphism UI**: Antarmuka responsif dan mulus tanpa reload halaman (*Single Page Application*).
+- **Vercel Ready**: Dirancang khusus agar bisa di-*deploy* ke Vercel secara gratis menggunakan *Serverless Functions*.
+- **Multi-Account**: Mendukung pergantian akun dengan sangat cepat menggunakan `localStorage` browser.
+- **PostgreSQL Caching**: Menggunakan PostgreSQL (Supabase/Neon) via SQLAlchemy + pg8000 untuk melakukan *cache* terhadap token dan mengurangi beban limit API provider.
+- **Stateless Backend**: Aman dari kebocoran sesi antar-pengguna (*No Race Conditions*).
+- **Vercel Cron Job**: Dilengkapi fitur `keepalive` harian untuk memastikan *database* gratisan kamu tidak dimatikan paksa.
 
-# How to get environtment Variables
-Go to [OUR TELEGRAM CHANNEL](https://t.me/alyxcli)
-Copy the provided environment variables and paste it into a text file named `.env` in the same directory as `main.py`.
-You can use nano or any text editor to create the file.
+## 🚀 Cara Instalasi (Lokal)
 
-# How to run with TERMUX
-1. Update & Upgrade Termux
-```
-pkg update && pkg upgrade -y
-```
-2. Install Git
-```
-pkg install git -y
-```
-3. Clone this repo
-```
-git clone https://github.com/purplemashu/me-cli-sunset
-```
-4. Open the folder
-```
-cd me-cli-sunset
-```
-5. Setup
-```
-bash setup.sh
-```
-6. Run the script
-```
-python main.py
-```
-
-# Info
-
-## PS for Certain Indonesian mobile internet service provider
-
-Instead of just delisting the package from the app, ensure the user cannot purchase it.
-What's the point of strong client side security when the server don't enforce it?
-
-## Terms of Service
-By using this tool, the user agrees to comply with all applicable laws and regulations and to release the developer from any and all claims arising from its use.
-
-## Contact
-
-contact@mashu.lol
-
-## Web UI (Desktop)
-
-Project ini sekarang memiliki web UI lokal yang tetap memakai logic/API dan file token yang sama dengan CLI.
-CLI lama tidak dihapus dan tetap dapat dijalankan dengan `python main.py`.
-
-### Menjalankan Web UI
-
-1. Siapkan `.env` yang sama seperti penggunaan CLI.
-2. Install dependency:
+1. Pastikan kamu memiliki Python 3.10 atau versi lebih baru.
+2. Buat file `.env` di folder proyek ini (lihat bagian *Environment Variables* di bawah).
+3. Instal semua kebutuhan pustaka Python:
    ```bash
    pip install -r requirements.txt
    ```
-3. Jalankan:
+4. Jalankan *backend* server FastAPI:
    ```bash
-   python web.py
+   uvicorn webapp.server:app --reload
    ```
-   atau di Windows klik `run-web.bat`.
-4. Buka browser:
-   ```text
-   http://127.0.0.1:8765
-   ```
+5. Buka `http://127.0.0.1:8000` di browsermu!
 
-### Fitur web yang tersedia
+*(Catatan: Jika dijalankan di lokal tanpa URL PostgreSQL di file `.env`, sistem secara otomatis akan menggunakan `local_cache.db` bawaan SQLite).*
 
-- Landing page desktop
-- Login OTP 6 digit
-- Multi-account / switch account
-- Dashboard (balance, points/tier, notifications, active package)
-- My Packages + unsubscribe
-- Store Packages, Family List, dan Store Segments
-- Package detail
-- Pembelian normal: Balance, DANA, ShopeePay, GoPay, OVO, QRIS
-- Transaction History
-- Family Plan / Akrab Organizer
-- XL Circle + member/bonus/spending overview
-- Redeemables / Rewards
-- Bookmark
-- Notifications + mark all unread as read
-- Dukcapil registration dan Validate MSISDN di halaman Support/Tools
+## 🌍 Cara Deployment (Vercel & Supabase)
+1. Buat database PostgreSQL gratis di Supabase, dan catat `Connection URL`-nya.
+2. Push repositori ini ke GitHub milikmu.
+3. Import ke Vercel, lalu isi **Environment Variables** berikut di pengaturan Vercel:
+   - `DATABASE_URL`: Isi dengan link dari Supabase.
+   - `API_KEY`: Rahasia API kamu.
+4. Klik Deploy!
 
-Web UI sengaja **tidak** menampilkan shortcut eksperimental seperti decoy, overwrite amount,
-atau loop purchase. Fitur tersebut tetap berada di CLI/source lama dan tidak dijadikan flow web normal.
+## 🔐 Environment Variables (.env)
+Buat file `.env` sejajar dengan folder utama, lalu isi dengan konfigurasi berikut:
+```env
+API_KEY=KODE_RAHASIA_PROVIDER_DI_SINI
+DATABASE_URL=postgresql://... (Opsional jika run di lokal, wajib jika di Vercel)
+```
+
+## ⚠️ Disclaimer & Terms of Service
+**Pesan untuk penyedia layanan:** Daripada sekadar menyembunyikan paket promo dari aplikasi resmi, pastikan celah pembelian di server kalian benar-benar ditutup. Tidak ada gunanya keamanan UI yang ketat jika API server tidak memvalidasinya.
+
+Dengan menggunakan alat ini, pengguna setuju untuk mematuhi seluruh hukum yang berlaku dan melepaskan *developer* dari segala macam tuntutan hukum. Proyek ini murni dibuat sebagai bahan edukasi dan pengembangan UI/UX.
+
+---
+**Contact:** contact@mashu.lol
