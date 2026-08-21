@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
+from sqlalchemy import create_engine, Column, BigInteger, String, Text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -20,9 +20,9 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class TokenCache(Base):
-    __tablename__ = "token_cache"
+    __tablename__ = "token_cache_v2"
     
-    number = Column(Integer, primary_key=True, index=True)
+    number = Column(BigInteger, primary_key=True, index=True)
     refresh_token = Column(String(500), nullable=False)
     sub_id = Column(String(100))
     sub_type = Column(String(50))
