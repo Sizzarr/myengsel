@@ -127,6 +127,9 @@ class ValidateMsisdnAction(BaseModel):
 
 
 def api_error(exc: Exception) -> HTTPException:
+    import traceback
+    print(f"[API_ERROR] {type(exc).__name__}: {exc}")
+    traceback.print_exc()
     return HTTPException(status_code=400, detail=str(exc))
 
 
