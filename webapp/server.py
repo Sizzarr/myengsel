@@ -152,6 +152,7 @@ def active_ctx(req: Request):
         raise api_error(exc)
 
 
+def fmt_date(ts: Any) -> str:
     try:
         return datetime.fromtimestamp(int(ts)).strftime("%d %b %Y")
     except Exception:
