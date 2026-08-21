@@ -3,7 +3,7 @@ from app.client.engsel import send_api_request
 
 BASE_API_URL = os.getenv("BASE_API_URL")
 AX_FP = os.getenv("AX_FP")
-UA = os.getenv("UA")
+UA = os.getenv("UA", "myXL / 8.9.0(1202); com.android.vending; (samsung; SM-N935F; SDK 33; Android 13)")
 
 def get_payment_methods(
     api_key: str,

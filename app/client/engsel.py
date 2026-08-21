@@ -15,7 +15,7 @@ from app.client.encrypt import (
 BASE_API_URL = os.getenv("BASE_API_URL")
 if not BASE_API_URL:
     raise ValueError("BASE_API_URL environment variable not set")
-UA = os.getenv("UA")
+UA = os.getenv("UA", "myXL / 8.9.0(1202); com.android.vending; (samsung; SM-N935F; SDK 33; Android 13)")
 
 def send_api_request(
     api_key: str,

@@ -22,7 +22,7 @@ if not BASE_CIAM_URL:
 BASIC_AUTH = os.getenv("BASIC_AUTH")
 AX_DEVICE_ID = ax_device_id()
 AX_FP = load_ax_fp()
-UA = os.getenv("UA")
+UA = os.getenv("UA", "myXL / 8.9.0(1202); com.android.vending; (samsung; SM-N935F; SDK 33; Android 13)")
 
 def validate_contact(contact: str) -> bool:
     if not contact.startswith("628") or len(contact) > 14:
@@ -201,7 +201,7 @@ def get_new_token(api_key: str, refresh_token: str, subscriber_id: str) -> str:
         "ax-request-device-model": "SM-N935F",
         "ax-fingerprint": AX_FP,
         "authorization": f"Basic {BASIC_AUTH}",
-        "user-agent": UA,
+        "User-Agent": UA,
         "ax-substype": "PREPAID",
         "content-type": "application/x-www-form-urlencoded"
     }
