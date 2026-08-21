@@ -36,14 +36,22 @@ class StatelessAuthStore:
         db = SessionLocal()
         try:
             cached = db.query(TokenCache).filter(TokenCache.number == number).first()
-            if cached and cached.refresh_token == refresh_token and cached.expiry > datetime.utcnow():
-                # Cache valid
-                return ActiveUser(
-                    number=cached.number,
-                    subscriber_id=cached.sub_id or "",
-                    subscription_type=cached.sub_type or "",
-                    tokens=json.loads(cached.tokens_json)
-                )
+            if cached:
+                if cached.refresh_token != refresh_token:
+                    print(f"CACHE MISS: refresh_token mismatch. DB token length: {len(cached.refresh_token)}, Request token length: {len(refresh_token)}")
+                elif cached.expiry <= datetime.utcnow():
+                    print(f"CACHE MISS: expired. Expiry: {cached.expiry}, Now: {datetime.utcnow()}")
+                else:
+                    # Cache valid
+                    print("CACHE HIT!")
+                    return ActiveUser(
+                        number=cached.number,
+                        subscriber_id=cached.sub_id or "",
+                        subscription_type=cached.sub_type or "",
+                        tokens=json.loads(cached.tokens_json)
+                    )
+            else:
+                print("CACHE MISS: No record found for number.")
 
             # Not cached or expired, get new token
             from app.client.ciam import get_new_token
