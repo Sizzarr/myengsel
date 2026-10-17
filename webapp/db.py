@@ -6,6 +6,7 @@ from sqlalchemy import (
     UniqueConstraint, create_engine,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.engine import make_url
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
@@ -19,6 +20,14 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+pg8000://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
+
+# `pgbouncer=true` is a Prisma-specific URL option. It is sometimes included
+# in Supabase transaction-pooler examples, but pg8000 receives it as an
+# unsupported connection argument. The pooler mode is selected by port 6543.
+if DATABASE_URL.startswith("postgresql+pg8000://"):
+    DATABASE_URL = make_url(DATABASE_URL).difference_update_query(
+        ["pgbouncer"]
+    ).render_as_string(hide_password=False)
 
 engine = create_engine(
     DATABASE_URL,
