@@ -30,6 +30,9 @@
 * {
   box-sizing: border-box;
 }
+[hidden] {
+  display: none !important;
+}
 html {
   scroll-behavior: smooth;
 }
@@ -626,6 +629,111 @@ a {
   text-align: center;
   font-size: 12px;
   color: var(--muted);
+}
+.auth-fields {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.auth-submit {
+  width: 100%;
+}
+.auth-back {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 24px;
+}
+.auth-mobile-brand {
+  display: none;
+  margin-bottom: 26px;
+}
+.auth-alternate {
+  text-align: center;
+  margin: 22px 0 0 !important;
+  font-size: 13px;
+}
+.auth-alternate a {
+  color: var(--blue-800);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-hint {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+.form-error {
+  padding: 11px 13px;
+  border-left: 3px solid var(--red);
+  color: #a31742;
+  background: #fff0f4;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0 0 18px;
+}
+.auth-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 22px;
+}
+.phone-link-form {
+  margin-top: 20px;
+}
+.account-row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.account-row-actions .btn-ghost {
+  padding: 0 8px;
+}
+.otp-actions {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 18px;
+}
+.field-label {
+  font-size: 13px;
+  font-weight: 750;
+}
+.session-status {
+  width: min(470px, 100%);
+  text-align: center;
+}
+.session-status > .brand {
+  margin-bottom: 24px;
+}
+.session-status > p {
+  color: var(--muted);
+  font-size: 13px;
+}
+.session-status .empty .btn {
+  margin-top: 18px;
+}
+:where(a, button, input, select):focus-visible {
+  outline: 3px solid var(--blue-600);
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .btn { transition: none; }
+  .btn:hover { transform: none; }
 }
 
 /* App shell */
@@ -1562,6 +1670,21 @@ a {
   }
   .auth-form {
     padding: 36px 24px;
+  }
+  .auth-page {
+    padding: 16px;
+  }
+  .auth-shell {
+    min-height: auto;
+  }
+  .auth-mobile-brand {
+    display: block;
+  }
+  .auth-form h2 {
+    font-size: 27px;
+  }
+  .account-row {
+    flex-wrap: wrap;
   }
   .app-shell {
     grid-template-columns: 1fr;

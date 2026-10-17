@@ -11,3 +11,8 @@ refresh-tokens*
 ax.fp
 bookmark.json
 active.number
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.pytest_cache/

@@ -5,7 +5,10 @@ const modalRoot = $('#modal-root');
 const toastEl = $('#toast');
 
 const state = {
-  accounts: JSON.parse(localStorage.getItem('accounts') || '[]'),
+  user: null,
+  accounts: [],
+  sessionReady: false,
+  sessionRevision: 0,
   dashboard: null,
   packages: [],
   storePackages: [],
@@ -13,6 +16,7 @@ const state = {
   segments: [],
   unread: 0,
   loginNumber: '',
+  reauthNumber: '',
   otpTries: 5,
 };
 
@@ -89,40 +93,64 @@ function toast(message, type = '') {
 
 async function api(url, options = {}) {
   const active = state.accounts.find(x => x.active) || state.accounts[0];
+  const revision = state.sessionRevision;
+  const { authRequest = false, ...fetchOptions } = options;
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
-  
-  if (active && active.tokens) {
-    headers['X-Number'] = active.number.toString();
-    headers['X-Refresh-Token'] = active.tokens.refresh_token || '';
-    headers['X-Subscriber-Id'] = active.subscriber_id || '';
-    headers['X-Subscription-Type'] = active.subscription_type || '';
+  if (active) headers['X-Number'] = String(active.number);
+  let res;
+  try { res = await fetch(url, { ...fetchOptions, headers, credentials: 'same-origin' }); }
+  catch (err) {
+    if (revision !== state.sessionRevision) err.handled = true;
+    throw err;
   }
-
-  const opt = { ...options, headers };
-  const res = await fetch(url, opt);
   let data = null;
   try { data = await res.json(); } catch { data = {}; }
+  if (revision !== state.sessionRevision) {
+    const err = new Error('Akun aktif sudah berubah.'); err.handled = true; throw err;
+  }
   if (!res.ok) {
-    if (res.status === 401 && active) {
-      toast('Sesi habis, silakan login ulang.', 'error');
-      state.accounts = state.accounts.filter(a => a.number !== active.number);
-      saveAccounts();
+    const detail = typeof data.detail === 'string' ? data.detail : 'Permintaan belum berhasil. Coba lagi.';
+    const err = new Error(detail || `Request gagal (${res.status})`);
+    err.status = res.status; err.code = data.code;
+    if (res.status === 401 && !authRequest) {
+      resetSession();
+      toast('Sesi aplikasi berakhir. Masuk lagi untuk membuka nomor tersimpan.', 'error');
       location.hash = '#/login';
+      err.handled = true;
+    } else if (res.status === 409 && data.code === 'provider_login_required') {
+      clearAccountData();
+      state.reauthNumber = active?.number || '';
+      toast(detail, 'error');
+      location.hash = '#/numbers';
+      if (routeName() === 'numbers') route();
+      err.handled = true;
     }
-    throw new Error(data.detail || `Request gagal (${res.status})`);
+    throw err;
   }
-  
-  // Update tokens if backend returned new ones (e.g. after refresh)
-  if (data.tokens && active) {
-     active.tokens = data.tokens;
-     saveAccounts();
-  }
-  
   return data;
 }
 
-function saveAccounts() {
-  localStorage.setItem('accounts', JSON.stringify(state.accounts));
+function setAccounts(accounts) {
+  state.accounts = (accounts || []).map(a => ({
+    number: String(a.number), subscriber_id: a.subscriber_id || '',
+    subscription_type: a.subscription_type || '', active: Boolean(a.active),
+  }));
+}
+
+function clearAccountData() {
+  state.dashboard = null; state.packages = []; state.storePackages = [];
+  state.families = []; state.segments = []; state.unread = 0;
+  state.loginNumber = ''; state.reauthNumber = ''; state.otpTries = 5;
+  state.sessionRevision += 1;
+}
+
+function resetSession() {
+  state.user = null; state.accounts = []; clearAccountData(); closeModal();
+}
+
+function privateStorageKey(kind) {
+  const active = state.accounts.find(a => a.active) || state.accounts[0];
+  return `myengsel_${kind}_${state.user?.id || ''}_${active?.number || ''}`;
 }
 
 function loading() {
@@ -147,7 +175,7 @@ const navItems = [
 ];
 
 function sidebar(active) {
-  return `<aside class="sidebar">${brand()}<nav class="side-nav">${navItems.map(([id, label, ic]) => `<a href="#/${id}" class="side-link ${active === id ? 'active' : ''}">${icon(ic)}<span>${label}</span>${id === 'notifications' && state.unread ? `<span class="count">${state.unread}</span>` : ''}</a>`).join('')}</nav><div class="side-footer"><strong>Web UI lokal</strong><br>UI ini memakai API dan file token yang sama dengan CLI.</div></aside>`;
+  return `<aside class="sidebar">${brand()}<nav class="side-nav">${navItems.map(([id, label, ic]) => `<a href="#/${id}" class="side-link ${active === id ? 'active' : ''}">${icon(ic)}<span>${label}</span>${id === 'notifications' && state.unread ? `<span class="count">${state.unread}</span>` : ''}</a>`).join('')}</nav><div class="side-footer"><strong>${escapeHtml(state.user?.username || 'Akun aplikasi')}</strong><br>Nomor XL tersimpan di akun ini.</div></aside>`;
 }
 
 function topbar(title, subtitle = '') {
@@ -160,12 +188,13 @@ function appShell(active, title, subtitle, body) {
 }
 
 async function loadAccounts() {
-  state.accounts = JSON.parse(localStorage.getItem('accounts') || '[]');
+  const data = await api('/api/accounts');
+  setAccounts(data.accounts);
 }
 
 function landingPage() {
-  app.innerHTML = `<div class="landing"><nav class="public-nav">${brand()}<div class="nav-links"><a class="active" href="#/">Home</a><a href="#/store">Packages</a><a href="#/rewards">Rewards</a><a href="#/family">Family Plan</a><a href="#/circle">XL Circle</a><a href="#/support">Support</a></div><div class="public-actions"><button class="btn btn-secondary btn-small" data-action="login">Login</button></div></nav><main class="landing-main"><section class="hero"><div class="hero-copy"><h1>Kelola layanan XL dalam satu tempat.</h1><p>Login aman dengan OTP, cek paket aktif, cari paket dari Store, lakukan pembayaran normal, serta kelola Family Plan dan XL Circle tanpa keramaian menu CLI.</p><div class="hero-actions"><button class="btn btn-primary" data-action="get-started">Mulai Sekarang ${icon('arrow')}</button><a class="btn btn-secondary" href="#/store">Lihat Paket</a></div></div><div class="hero-preview"><div class="preview-top"><div><span class="preview-label">Akun aktif</span><div class="preview-number">62819••••••••</div></div><div class="preview-balance"><span class="preview-label">Saldo</span><strong>Ringkas & jelas</strong></div></div><div class="preview-package"><div class="preview-package-head"><div><span class="mini-badge">Paket aktif</span><h3>Xtra Combo</h3></div><button class="link">Lihat Detail ${icon('arrow')}</button></div><div class="preview-grid"><div class="preview-stat"><span class="preview-label">Internet</span><strong>12.4 GB</strong><div class="mini-progress"><i style="width:62%"></i></div></div><div class="preview-stat"><span class="preview-label">Voice</span><strong>60 Min</strong><div class="mini-progress"><i style="width:60%"></i></div></div><div class="preview-stat"><span class="preview-label">SMS</span><strong>50 SMS</strong><div class="mini-progress"><i style="width:50%"></i></div></div><div class="preview-stat"><span class="preview-label">Points</span><strong>1.240</strong><div class="mini-progress"><i style="width:78%"></i></div></div></div></div></div></section><div class="landing-features">${[
-    ['lock', 'Secure OTP Login', 'Login memakai nomor XL 628… dan OTP 6 digit sesuai flow program.'],
+  app.innerHTML = `<div class="landing"><nav class="public-nav">${brand()}<div class="nav-links"><a class="active" href="#/">Home</a><a href="#/store">Packages</a><a href="#/rewards">Rewards</a><a href="#/family">Family Plan</a><a href="#/circle">XL Circle</a><a href="#/support">Support</a></div><div class="public-actions"><button class="btn btn-secondary btn-small" data-action="login">Login</button></div></nav><main class="landing-main"><section class="hero"><div class="hero-copy"><h1>Kelola layanan XL dalam satu tempat.</h1><p>Masuk ke akun aplikasi, hubungkan nomor XL dengan OTP, lalu cek paket, pembayaran, Family Plan, dan XL Circle. Nomor tersimpan untuk kunjungan berikutnya.</p><div class="hero-actions"><button class="btn btn-primary" data-action="get-started">Mulai Sekarang ${icon('arrow')}</button><a class="btn btn-secondary" href="#/store">Lihat Paket</a></div></div><div class="hero-preview"><div class="preview-top"><div><span class="preview-label">Akun aktif</span><div class="preview-number">62819••••••••</div></div><div class="preview-balance"><span class="preview-label">Saldo</span><strong>Ringkas & jelas</strong></div></div><div class="preview-package"><div class="preview-package-head"><div><span class="mini-badge">Paket aktif</span><h3>Xtra Combo</h3></div><button class="link">Lihat Detail ${icon('arrow')}</button></div><div class="preview-grid"><div class="preview-stat"><span class="preview-label">Internet</span><strong>12.4 GB</strong><div class="mini-progress"><i style="width:62%"></i></div></div><div class="preview-stat"><span class="preview-label">Voice</span><strong>60 Min</strong><div class="mini-progress"><i style="width:60%"></i></div></div><div class="preview-stat"><span class="preview-label">SMS</span><strong>50 SMS</strong><div class="mini-progress"><i style="width:50%"></i></div></div><div class="preview-stat"><span class="preview-label">Points</span><strong>1.240</strong><div class="mini-progress"><i style="width:78%"></i></div></div></div></div></div></section><div class="landing-features">${[
+    ['lock', 'Akun dan nomor tersimpan', 'Masuk dengan username dan password, lalu hubungkan nomor XL lewat OTP.'],
     ['package', 'My Packages', 'Lihat paket aktif, benefit DATA/VOICE/TEXT, kuota tersisa, dan detail paket.'],
     ['store', 'Store Packages', 'Cari package families, store packages, dan redeemables dari API program.'],
     ['family', 'Family & Circle', 'Kelola Family Plan/Akrab Organizer dan XL Circle sebagai dua fitur terpisah.'],
@@ -180,43 +209,78 @@ function landingPage() {
 }
 
 function authArt() {
-  return `<section class="auth-art">${brand()}<h1>Masuk dengan nomor XL.</h1><p>Flow login tetap mengikuti program: nomor diawali 628, request OTP, lalu verifikasi 6 digit.</p><div class="auth-points"><div class="auth-point">${icon('lock', 'feature-icon')}<div><strong>OTP 6 digit</strong><span>Verifikasi sesuai endpoint CIAM yang sudah dipakai CLI.</span></div></div><div class="auth-point">${icon('user', 'feature-icon')}<div><strong>Multi-account</strong><span>Akun tersimpan tetap kompatibel dengan refresh-tokens.json.</span></div></div><div class="auth-point">${icon('refresh', 'feature-icon')}<div><strong>Account switcher</strong><span>Ganti akun tanpa mengubah struktur project lama.</span></div></div></div></section>`;
+  return `<section class="auth-art">${brand()}<h1>Nomor XL kamu, dalam satu akun.</h1><p>Masuk ke akun aplikasi, lalu hubungkan nomor XL dengan kode OTP.</p><div class="auth-points"><div class="auth-point">${icon('user', 'feature-icon')}<div><strong>Satu akun untuk semua nomor</strong><span>Pilih nomor yang ingin kamu kelola setelah masuk.</span></div></div><div class="auth-point">${icon('refresh', 'feature-icon')}<div><strong>Tetap ada saat refresh</strong><span>Nomor tersimpan di akun dan bisa dibuka kembali.</span></div></div><div class="auth-point">${icon('lock', 'feature-icon')}<div><strong>Verifikasi nomor dengan OTP</strong><span>OTP baru mungkin diperlukan saat sesi XL berakhir.</span></div></div></div></section>`;
 }
 
-function loginPage() {
+function loginPage(register = false) {
+  app.innerHTML = `<div class="auth-page"><div class="auth-shell">${authArt()}<section class="auth-form"><a href="#/" class="auth-back">${icon('back')} Kembali ke beranda</a><div class="auth-mobile-brand">${brand()}</div><h2>${register ? 'Buat akun aplikasi' : 'Masuk ke akun kamu'}</h2><p>${register ? 'Daftar untuk menyimpan dan mengelola nomor XL kamu.' : 'Gunakan username dan password untuk membuka nomor XL tersimpan.'}</p><form id="session-form"><fieldset class="auth-fields"><div class="field"><label for="app-username">Username</label><input class="input" id="app-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" maxlength="32" pattern="[A-Za-z0-9_.\\-]{3,32}" required aria-describedby="username-hint" /><small class="field-hint" id="username-hint">3–32 karakter: huruf, angka, titik, garis bawah, atau tanda hubung.</small></div><div class="field"><label for="app-password">Password</label><input class="input" id="app-password" name="password" type="password" autocomplete="${register ? 'new-password' : 'current-password'}" minlength="10" maxlength="128" required ${register ? 'aria-describedby="password-hint"' : ''} />${register ? '<small class="field-hint" id="password-hint">Gunakan 10–128 karakter.</small>' : ''}</div>${register ? '<div class="field"><label for="app-password-confirm">Ulangi password</label><input class="input" id="app-password-confirm" name="password_confirmation" type="password" autocomplete="new-password" minlength="10" maxlength="128" required /></div>' : ''}<p id="session-error" class="form-error" role="alert" hidden></p><button class="btn btn-primary auth-submit" type="submit">${register ? 'Buat akun' : 'Masuk'} ${icon('arrow')}</button></fieldset></form><p class="auth-alternate">${register ? 'Sudah punya akun? <a href="#/login">Masuk</a>' : 'Belum punya akun? <a href="#/register">Buat akun</a>'}</p><div class="auth-note">${register ? 'Setelah daftar, hubungkan nomor XL dengan OTP.' : 'Nomor XL akan diminta setelah kamu masuk.'}</div></section></div></div>`;
+  $('#session-form').addEventListener('submit', e => submitSessionForm(e, register));
+}
+
+async function submitSessionForm(e, register) {
+  e.preventDefault();
+  const form = e.currentTarget, fields = $('fieldset', form), btn = $('button[type="submit"]', form);
+  const username = $('#app-username').value.trim(), password = $('#app-password').value;
+  const errorEl = $('#session-error');
+  errorEl.hidden = true;
+  if (register && password !== $('#app-password-confirm').value) {
+    errorEl.textContent = 'Password belum sama. Periksa kembali kedua kolom password.';
+    errorEl.hidden = false; $('#app-password-confirm').focus(); return;
+  }
+  fields.disabled = true; form.setAttribute('aria-busy', 'true'); btn.textContent = register ? 'Membuat akun…' : 'Masuk…';
+  try {
+    const data = await api(`/api/session/${register ? 'register' : 'login'}`, { authRequest: true, method: 'POST', body: JSON.stringify({ username, password }) });
+    clearAccountData(); state.user = { id: data.user.id, username: data.user.username }; setAccounts(data.accounts);
+    form.reset(); toast(register ? 'Akun berhasil dibuat. Hubungkan nomor XL kamu.' : 'Berhasil masuk.', 'success');
+    location.hash = state.accounts.length ? '#/dashboard' : '#/numbers';
+  } catch (err) {
+    if (!err.handled) { errorEl.textContent = err.message || 'Belum bisa tersambung. Coba lagi.'; errorEl.hidden = false; }
+  } finally {
+    fields.disabled = false; form.removeAttribute('aria-busy'); btn.innerHTML = `${register ? 'Buat akun' : 'Masuk'} ${icon('arrow')}`;
+  }
+}
+
+function numbersPage() {
   const hasAccounts = state.accounts.length > 0;
-  const fromDashboard = location.hash.includes('from=dashboard');
-  const backBtn = fromDashboard 
-    ? `<a href="#/dashboard" class="btn btn-ghost btn-small" style="align-self:flex-start;margin-bottom:16px;padding:0;color:var(--muted)">${icon('back')} Kembali ke Dashboard</a>`
-    : `<a href="#/" class="btn btn-ghost btn-small" style="align-self:flex-start;margin-bottom:16px;padding:0;color:var(--muted)">${icon('back')} Kembali ke Home Page</a>`;
-  app.innerHTML = `<div class="auth-page"><div class="auth-shell">${authArt()}<section class="auth-form">${backBtn}<h2>${hasAccounts ? 'Pilih atau tambah akun' : 'Login ke myXL'}</h2><p>${hasAccounts ? 'Gunakan akun tersimpan atau login dengan nomor baru.' : 'Masukkan nomor XL yang akan digunakan.'}</p>${hasAccounts ? `<div class="account-list">${state.accounts.map(a => `<div class="account-row ${a.active ? 'active' : ''}"><div><div class="account-number">${escapeHtml(a.number)}</div><div class="account-meta">${escapeHtml(a.subscription_type || 'XL')}${a.active ? ' · aktif' : ''}</div></div><div><button class="btn btn-secondary btn-small" data-switch-account="${a.number}">${a.active ? 'Masuk Dashboard' : 'Gunakan'}</button><button class="btn btn-ghost btn-small" data-remove-account="${a.number}">${icon('trash')}</button></div></div>`).join('')}</div><div style="height:1px;background:var(--line);margin:3px 0 22px"></div><button class="btn btn-secondary" style="width:100%" id="show-new-number">${icon('plus')} Tambahkan Nomor Baru</button>` : ''}<form id="login-form" style="${hasAccounts ? 'display:none;margin-top:20px' : ''}"><div class="field"><label>Nomor XL</label><input class="input" id="phone-number" placeholder="6281234567890" inputmode="numeric" maxlength="14" /></div><button class="btn btn-primary" style="width:100%" type="submit">Kirim OTP ${icon('arrow')}</button></form><div class="auth-note" id="login-note" style="${hasAccounts ? 'display:none' : ''}">Nomor harus diawali <strong>628</strong> dan berisi 10–14 digit.</div></section></div></div>`;
+  const showNumber = !hasAccounts || Boolean(state.reauthNumber) || location.hash.includes('add=1');
+  app.innerHTML = `<div class="auth-page"><div class="auth-shell">${authArt()}<section class="auth-form">${hasAccounts ? `<a href="#/dashboard" class="auth-back">${icon('back')} Kembali ke dashboard</a>` : ''}<div class="auth-mobile-brand">${brand()}</div><div class="auth-user-row"><span>Masuk sebagai <strong>${escapeHtml(state.user.username)}</strong></span><button class="link" data-action="logout">Keluar</button></div><h2>${state.reauthNumber ? 'Verifikasi ulang nomor XL' : hasAccounts ? 'Pilih nomor XL' : 'Hubungkan nomor XL'}</h2><p>${state.reauthNumber ? 'Sesi XL perlu diperbarui. Kirim OTP untuk menggunakan nomor ini lagi.' : hasAccounts ? 'Nomor berikut tersimpan di akun aplikasi kamu.' : 'Masukkan nomor XL kamu, lalu verifikasi dengan kode OTP dari SMS.'}</p>${hasAccounts ? `<div class="account-list">${state.accounts.map(renderAccountRow).join('')}</div><button class="btn btn-secondary auth-submit" id="show-new-number" ${showNumber ? 'hidden' : ''}>${icon('plus')} Tambah nomor XL</button>` : ''}<form id="login-form" class="phone-link-form" ${showNumber ? '' : 'hidden'}><div class="field"><label for="phone-number">Nomor XL</label><input class="input" id="phone-number" name="number" type="tel" placeholder="6281234567890" value="${escapeHtml(state.reauthNumber)}" inputmode="numeric" autocomplete="tel" pattern="628[0-9]{7,11}" minlength="10" maxlength="14" required aria-describedby="login-note" /></div><p id="phone-error" class="form-error" role="alert" hidden></p><button class="btn btn-primary auth-submit" type="submit">Kirim OTP ${icon('arrow')}</button><div class="auth-note" id="login-note">Awali nomor dengan <strong>628</strong>, gunakan 10–14 digit.</div></form><div class="auth-note">Nomor disimpan di akun kamu. OTP baru mungkin diperlukan saat sesi XL berakhir.</div></section></div></div>`;
   $('#login-form').addEventListener('submit', requestOtp);
   if (hasAccounts) {
-    $('#show-new-number').addEventListener('click', e => { e.target.style.display = 'none'; $('#login-form').style.display = 'block'; $('#login-note').style.display = 'block'; $('#phone-number').focus(); });
+    $('#show-new-number').addEventListener('click', e => { e.currentTarget.hidden = true; $('#login-form').hidden = false; $('#phone-number').value = ''; state.reauthNumber = ''; $('#phone-number').focus(); });
   }
+}
+
+function renderAccountRow(a) {
+  const number = escapeHtml(a.number);
+  return `<div class="account-row ${a.active ? 'active' : ''}"><div><div class="account-number">${number}</div><div class="account-meta">${escapeHtml(a.subscription_type || 'XL')}${a.active ? ' · aktif' : ''}</div></div><div class="account-row-actions"><button class="btn btn-secondary btn-small" data-switch-account="${number}">${a.active ? 'Buka' : 'Gunakan'}</button><button class="btn btn-ghost btn-small" data-reauth-number="${number}" aria-label="Verifikasi ulang nomor ${number}" title="Verifikasi ulang OTP">${icon('refresh')}</button><button class="btn btn-ghost btn-small" data-remove-account="${number}" aria-label="Hapus nomor ${number}" title="Hapus nomor">${icon('trash')}</button></div></div>`;
 }
 
 async function requestOtp(e) {
   e.preventDefault();
   const number = $('#phone-number').value.trim();
-  const btn = e.submitter;
+  const btn = e.submitter || $('button[type="submit"]', e.currentTarget);
+  const errorEl = $('#phone-error'); errorEl.hidden = true;
   btn.disabled = true; btn.textContent = 'Mengirim OTP…';
   try {
     await api('/api/auth/request-otp', { method: 'POST', body: JSON.stringify({ number }) });
     state.loginNumber = number;
     state.otpTries = 5;
     location.hash = '#/otp';
-  } catch (err) { toast(err.message, 'error'); }
+  } catch (err) { if (!err.handled) { errorEl.textContent = err.message; errorEl.hidden = false; } }
   finally { btn.disabled = false; btn.innerHTML = `Kirim OTP ${icon('arrow')}`; }
 }
 
 function otpPage() {
-  if (!state.loginNumber) { location.hash = '#/login'; return; }
-  app.innerHTML = `<div class="auth-page"><div class="auth-shell">${authArt()}<section class="auth-form"><h2>Verifikasi OTP</h2><p>Kode verifikasi dikirim via SMS ke <strong>${escapeHtml(state.loginNumber)}</strong>.</p><form id="otp-form"><div class="field"><label>OTP 6 digit</label><div class="otp-boxes">${Array.from({ length: 6 }, (_, i) => `<input class="otp-box" inputmode="numeric" maxlength="1" data-otp="${i}" />`).join('')}</div></div><div style="display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-bottom:18px"><span>Sisa percobaan: <strong id="tries">${state.otpTries}</strong></span><button class="link" type="button" data-action="resend-otp">Kirim ulang OTP</button></div><button class="btn btn-primary" style="width:100%" type="submit">Verifikasi & Masuk</button></form><button class="btn btn-ghost" style="margin-top:12px" data-action="back-login">${icon('arrow')} Ganti nomor</button></section></div></div>`;
+  if (!state.loginNumber) { location.hash = '#/numbers'; return; }
+  app.innerHTML = `<div class="auth-page"><div class="auth-shell">${authArt()}<section class="auth-form"><div class="auth-mobile-brand">${brand()}</div><h2>Verifikasi nomor XL</h2><p>Kode verifikasi dikirim via SMS ke <strong>${escapeHtml(state.loginNumber)}</strong>.</p><form id="otp-form"><div class="field"><span class="field-label" id="otp-label">OTP 6 digit</span><div class="otp-boxes" role="group" aria-labelledby="otp-label">${Array.from({ length: 6 }, (_, i) => `<input class="otp-box" inputmode="numeric" pattern="[0-9]" maxlength="1" aria-label="Digit OTP ${i + 1}" ${i === 0 ? 'autocomplete="one-time-code"' : 'autocomplete="off"'} data-otp="${i}" required />`).join('')}</div></div><div class="otp-actions"><span>Sisa percobaan: <strong id="tries">${state.otpTries}</strong></span><button class="link" type="button" data-action="resend-otp">Kirim ulang OTP</button></div><button class="btn btn-primary auth-submit" type="submit">Verifikasi & Simpan Nomor</button></form><button class="btn btn-ghost" style="margin-top:12px" data-action="back-login">${icon('back')} Ganti nomor</button><div class="auth-note">Setelah verifikasi, nomor tersimpan di akun aplikasi kamu.</div></section></div></div>`;
   const boxes = $$('.otp-box');
   boxes.forEach((b, i) => {
     b.addEventListener('input', () => { b.value = b.value.replace(/\D/g, '').slice(0, 1); if (b.value && boxes[i + 1]) boxes[i + 1].focus(); });
     b.addEventListener('keydown', e => { if (e.key === 'Backspace' && !b.value && boxes[i - 1]) boxes[i - 1].focus(); });
+    b.addEventListener('paste', e => {
+      const digits = (e.clipboardData?.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+      if (digits.length > 1) { e.preventDefault(); digits.split('').forEach((d, j) => { if (boxes[i + j]) boxes[i + j].value = d; }); boxes[Math.min(i + digits.length, 5)].focus(); }
+    });
   });
   boxes[0].focus();
   $('#otp-form').addEventListener('submit', submitOtpForm);
@@ -226,26 +290,18 @@ async function submitOtpForm(e) {
   e.preventDefault();
   const otp = $$('.otp-box').map(x => x.value).join('');
   if (otp.length !== 6) return toast('Masukkan 6 digit OTP.', 'error');
-  const btn = e.submitter; btn.disabled = true; btn.textContent = 'Memverifikasi…';
+  const btn = e.submitter || $('button[type="submit"]', e.currentTarget); btn.disabled = true; btn.textContent = 'Memverifikasi…';
   try {
     const data = await api('/api/auth/submit-otp', { method: 'POST', body: JSON.stringify({ number: state.loginNumber, otp }) });
-    
-    state.accounts.forEach(a => a.active = false);
-    const existing = state.accounts.find(a => a.number == data.user.number);
-    if (existing) {
-       Object.assign(existing, data.user, { active: true, tokens: data.tokens });
-    } else {
-       state.accounts.push({ ...data.user, active: true, tokens: data.tokens });
-    }
-    saveAccounts();
-    
-    toast('Login berhasil.', 'success');
+    clearAccountData(); setAccounts(data.accounts);
+    toast('Nomor XL berhasil disimpan.', 'success');
     location.hash = '#/dashboard';
   } catch (err) {
+    if (err.handled) return;
     state.otpTries = Math.max(0, state.otpTries - 1); $('#tries').textContent = state.otpTries;
     toast(err.message, 'error');
-    if (state.otpTries <= 0) { setTimeout(() => location.hash = '#/login', 900); }
-  } finally { btn.disabled = false; btn.textContent = 'Verifikasi & Masuk'; }
+    if (state.otpTries <= 0) { setTimeout(() => location.hash = '#/numbers', 900); }
+  } finally { btn.disabled = false; btn.textContent = 'Verifikasi & Simpan Nomor'; }
 }
 
 function renderBenefit(benefit) {
@@ -282,8 +338,7 @@ async function dashboardPage() {
 async function loadDashboardExtras() {
   try {
     const s = await api('/api/store/packages');
-    const active = state.accounts.find(x => x.active) || state.accounts[0];
-    const key = `bookmarks_${active ? active.number : ''}`;
+    const key = privateStorageKey('bookmarks');
     const bm = JSON.parse(localStorage.getItem(key) || '[]').slice(0, 2);
     $('#dash-bookmarks').innerHTML = bm.length ? `<div class="card list-card">${bm.map(x => `<div class="list-row">${icon('bookmark', 'list-icon')}<div class="list-main"><div class="list-title">${escapeHtml(x.family_name || x.option_name || 'Saved package')}</div><div class="list-sub">${escapeHtml(x.variant_name || '')} · ${escapeHtml(x.option_name || '')}</div></div></div>`).join('')}</div>` : emptyState('Belum ada bookmark', 'Simpan paket dari fitur bookmark agar tampil di sini.', 'bookmark');
     const pk = (s.data?.results_price_only || []).filter(x => x.action_type === 'PDP').slice(0, 3);
@@ -313,7 +368,7 @@ function openTransactionModal(tData) {
 
     let qrTime = 0;
     try {
-      const cached = JSON.parse(localStorage.getItem('cached_qris') || '{}');
+      const cached = JSON.parse(localStorage.getItem(privateStorageKey('qris')) || '{}');
       const c = cached[txId];
       if (c && !t.qr_png && !t.qr_code) {
         if (typeof c === 'string') { t.qr_png = c; qrTime = Date.now(); }
@@ -454,8 +509,7 @@ async function rewardsPage() {
 async function bookmarksPage() {
   app.innerHTML = appShell('bookmarks', 'Bookmarks', 'Paket yang disimpan dari store.', loading());
   try { 
-    const active = state.accounts.find(x => x.active) || state.accounts[0];
-    const key = `bookmarks_${active ? active.number : ''}`;
+    const key = privateStorageKey('bookmarks');
     const b = JSON.parse(localStorage.getItem(key) || '[]'); 
     const body = b.length ? `<div class="cards-4">${b.map(x => `<article class="card info-card"><span class="mini-badge">Bookmark</span><h3 style="font-size:16px;margin-top:12px">${escapeHtml(x.family_name || x.option_name || 'Package')}</h3><p>${escapeHtml(x.variant_name || '')} · ${escapeHtml(x.option_name || '')}</p><div style="display:flex;gap:8px;margin-top:15px"><button class="btn btn-secondary btn-small" data-family-detail="${escapeHtml(x.family_code)}">Buka Family</button><button class="btn btn-ghost btn-small" style="color:var(--red)" data-bookmark-remove='${JSON.stringify(x).replace(/'/g, '&#39;')}'>${icon('trash')}</button></div></article>`).join('')}</div>` : emptyState('Belum ada bookmark', 'Bookmark yang disimpan akan tampil di sini.', 'bookmark'); 
     app.innerHTML = appShell('bookmarks', 'Bookmarks', 'Paket yang disimpan dari store.', body); 
@@ -506,7 +560,7 @@ function checkoutModal(code) {
   const body = `<div class="field"><label>Metode pembayaran</label><div class="payment-methods">${[['BALANCE', 'Pulsa / Balance'], ['QRIS', 'QRIS'], ['DANA', 'DANA'], ['SHOPEEPAY', 'ShopeePay'], ['GOPAY', 'GoPay'], ['OVO', 'OVO']].map(([v, l], i) => `<label class="payment-method"><input type="radio" name="pay-method" value="${v}" ${i === 0 ? 'checked' : ''}><strong>${l}</strong></label>`).join('')}</div></div><div class="field" id="wallet-field" style="display:none"><label>Nomor e-wallet</label><input id="wallet-number" class="input" placeholder="08xxxxxxxxxx" /></div><button class="btn btn-primary" style="width:100%" id="pay-submit">Lanjutkan Pembayaran</button><p class="auth-note">Pembelian ini memakai settlement normal dari program. Tidak ada overwrite amount atau decoy.</p>`;
   showModal('Checkout', body);
   $$('input[name=pay-method]').forEach(r => r.addEventListener('change', () => { $('#wallet-field').style.display = ['DANA', 'OVO'].includes(r.value) && r.checked ? 'grid' : 'none'; }));
-  $('#pay-submit').addEventListener('click', async () => { const method = $('input[name=pay-method]:checked').value; const wallet = $('#wallet-number')?.value.trim() || ''; const btn = $('#pay-submit'); btn.disabled = true; btn.textContent = 'Memproses…'; try { const res = await api('/api/purchase', { method: 'POST', body: JSON.stringify({ option_code: code, method, wallet_number: wallet }) }); if (method === 'QRIS' && res.qr_png) { try { const cached = JSON.parse(localStorage.getItem('cached_qris') || '{}'); cached[res.transaction_id] = { qr: res.qris, time: Date.now() }; localStorage.setItem('cached_qris', JSON.stringify(cached)); } catch(e){} const qrisLogo = `<img src="https://upload.wikimedia.org/wikipedia/commons/a/a2/Logo_QRIS.svg" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:50px;height:14px;background:#fff;padding:4px;border-radius:6px;box-shadow:0 2px 5px rgba(0,0,0,0.1)">`; setModalBody(`<div class="qr-wrap" style="text-align:center"><div style="position:relative;display:inline-block"><img src="${res.qr_png}" alt="QRIS" style="max-width:250px;border-radius:8px">${qrisLogo}</div><h3 style="margin-top:16px">Scan QRIS</h3><p style="color:var(--muted);font-size:12px;word-break:break-all;margin-top:8px;background:var(--soft);padding:10px;border-radius:8px">Transaction ID:<br><strong>${escapeHtml(res.transaction_id)}</strong></p></div>`); return; } const deeplink = res.result?.data?.deeplink; if (deeplink) { setModalBody(`<div class="empty">${icon('check', 'feature-icon')}<h3>Pembayaran dibuat</h3><p>Selesaikan pembayaran melalui e-wallet.</p><a class="btn btn-primary" href="${escapeHtml(deeplink)}" target="_blank" rel="noopener" style="margin-top:16px">Buka E-Wallet</a></div>`); return; } if (res.ok) { setModalBody(emptyState('Transaksi berhasil dibuat', 'Cek My Packages atau Transactions untuk status terbaru.', 'check')); } else { throw new Error('Settlement tidak berhasil.'); } } catch (err) { toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'Lanjutkan Pembayaran'; } });
+  $('#pay-submit').addEventListener('click', async () => { const method = $('input[name=pay-method]:checked').value; const wallet = $('#wallet-number')?.value.trim() || ''; const btn = $('#pay-submit'); btn.disabled = true; btn.textContent = 'Memproses…'; try { const res = await api('/api/purchase', { method: 'POST', body: JSON.stringify({ option_code: code, method, wallet_number: wallet }) }); if (method === 'QRIS' && res.qr_png) { try { const cached = JSON.parse(localStorage.getItem(privateStorageKey('qris')) || '{}'); cached[res.transaction_id] = { qr: res.qris, time: Date.now() }; localStorage.setItem(privateStorageKey('qris'), JSON.stringify(cached)); } catch(e){} const qrisLogo = `<img src="https://upload.wikimedia.org/wikipedia/commons/a/a2/Logo_QRIS.svg" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:50px;height:14px;background:#fff;padding:4px;border-radius:6px;box-shadow:0 2px 5px rgba(0,0,0,0.1)">`; setModalBody(`<div class="qr-wrap" style="text-align:center"><div style="position:relative;display:inline-block"><img src="${res.qr_png}" alt="QRIS" style="max-width:250px;border-radius:8px">${qrisLogo}</div><h3 style="margin-top:16px">Scan QRIS</h3><p style="color:var(--muted);font-size:12px;word-break:break-all;margin-top:8px;background:var(--soft);padding:10px;border-radius:8px">Transaction ID:<br><strong>${escapeHtml(res.transaction_id)}</strong></p></div>`); return; } const deeplink = res.result?.data?.deeplink; if (deeplink) { setModalBody(`<div class="empty">${icon('check', 'feature-icon')}<h3>Pembayaran dibuat</h3><p>Selesaikan pembayaran melalui e-wallet.</p><a class="btn btn-primary" href="${escapeHtml(deeplink)}" target="_blank" rel="noopener" style="margin-top:16px">Buka E-Wallet</a></div>`); return; } if (res.ok) { setModalBody(emptyState('Transaksi berhasil dibuat', 'Cek My Packages atau Transactions untuk status terbaru.', 'check')); } else { throw new Error('Settlement tidak berhasil.'); } } catch (err) { toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'Lanjutkan Pembayaran'; } });
 }
 
 function showModal(title, body) { modalRoot.innerHTML = `<div class="modal-backdrop"><div class="modal"><div class="modal-head"><h2>${escapeHtml(title)}</h2><button class="close-btn" data-action="close-modal">${icon('close')}</button></div><div class="modal-body">${body}</div></div></div>`; }
@@ -515,22 +569,55 @@ function closeModal() { modalRoot.innerHTML = ''; }
 function showJsonModal(title, data) { showModal(title, `<pre style="white-space:pre-wrap;word-break:break-word;background:var(--soft);padding:16px;border-radius:13px;font-size:11px;max-height:60vh;overflow:auto">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`); }
 
 async function showAccountsModal() {
-  await loadAccounts();
-  showModal('Pilih Akun', state.accounts.length ? `<div class="account-list">${state.accounts.map(a => `<div class="account-row ${a.active ? 'active' : ''}"><div><div class="account-number">${escapeHtml(a.number)}</div><div class="account-meta">${escapeHtml(a.subscription_type || 'XL')} ${a.active ? '· aktif' : ''}</div></div><div>${a.active ? '<span class="mini-badge" style="margin-right:8px">Aktif</span>' : `<button class="btn btn-secondary btn-small" data-switch-account="${a.number}" style="margin-right:8px">Gunakan</button>`}<button class="btn btn-ghost btn-small" data-remove-account="${a.number}">${icon('trash')}</button></div></div>`).join('')}</div><button class="btn btn-primary" style="width:100%" data-action="add-account">${icon('plus')} Tambah Akun</button>` : `${emptyState('Belum ada akun', 'Tambahkan akun XL untuk melanjutkan.', 'user')}<button class="btn btn-primary" style="width:100%" data-action="add-account">Tambah Akun</button>`);
+  try {
+    await loadAccounts();
+    showModal('Pilih nomor XL', `${state.accounts.length ? `<div class="account-list">${state.accounts.map(renderAccountRow).join('')}</div>` : emptyState('Belum ada nomor XL', 'Hubungkan nomor XL untuk melanjutkan.', 'phone')}<button class="btn btn-primary auth-submit" data-action="add-account">${icon('plus')} Tambah nomor XL</button>`);
+  } catch (err) { if (!err.handled) toast(err.message, 'error'); }
 }
 
-async function switchAccount(number) {
-  try { 
-    state.accounts.forEach(a => a.active = (a.number == number));
-    saveAccounts();
-    closeModal(); 
-    toast('Akun diaktifkan.', 'success'); 
-    if (routeName() === 'login') {
+let accountMutationPending = false;
+async function switchAccount(number, btn) {
+  if (accountMutationPending) return;
+  accountMutationPending = true;
+  if (btn) btn.disabled = true;
+  try {
+    const data = await api(`/api/accounts/${encodeURIComponent(number)}/activate`, { method: 'POST' });
+    clearAccountData(); setAccounts(data.accounts); closeModal();
+    toast('Nomor XL diaktifkan.', 'success');
+    if (routeName() === 'numbers') {
       location.hash = '#/dashboard';
     } else {
-      route(); 
+      route();
     }
-  } catch (err) { toast(err.message, 'error') }
+  } catch (err) { if (!err.handled) toast(err.message, 'error'); }
+  finally { accountMutationPending = false; if (btn) btn.disabled = false; }
+}
+
+async function removeAccount(number, btn) {
+  if (accountMutationPending) return;
+  if (!confirm(`Hapus nomor ${number} dari akun ini? Kamu perlu OTP untuk menghubungkannya lagi.`)) return;
+  accountMutationPending = true;
+  btn.disabled = true;
+  try {
+    const data = await api(`/api/accounts/${encodeURIComponent(number)}`, { method: 'DELETE' });
+    clearAccountData(); setAccounts(data.accounts); closeModal();
+    toast('Nomor dihapus dari akun ini.', 'success');
+    if (!state.accounts.length) { location.hash = '#/numbers'; if (routeName() === 'numbers') route(); }
+    else route();
+  } catch (err) { if (!err.handled) toast(err.message, 'error'); }
+  finally { accountMutationPending = false; btn.disabled = false; }
+}
+
+async function logout(btn) {
+  if (accountMutationPending) return;
+  accountMutationPending = true;
+  btn.disabled = true;
+  try {
+    await api('/api/session/logout', { method: 'POST' });
+    resetSession(); toast('Berhasil keluar. Nomor tetap tersimpan di akun kamu.', 'success');
+    location.hash = '#/login';
+  } catch (err) { if (!err.handled) toast('Belum berhasil keluar. Periksa koneksi lalu coba lagi.', 'error'); }
+  finally { accountMutationPending = false; btn.disabled = false; }
 }
 
 async function handleUnsubscribe(raw) {
@@ -545,40 +632,73 @@ function simpleFormModal(title, fields, onSubmit) {
 }
 
 function handleProtectedError(err) {
-  if (/belum login|401/i.test(err.message)) { toast('Silakan login terlebih dahulu.', 'error'); setTimeout(() => location.hash = '#/login', 350); } else { app.innerHTML = appShell('', 'Terjadi kesalahan', '', emptyState('Data gagal dimuat', err.message, 'info')); }
+  if (err.handled) return;
+  app.innerHTML = appShell('', 'Terjadi kesalahan', '', emptyState('Data gagal dimuat', err.message, 'info', '<button class="btn btn-primary" data-action="retry-page">Coba lagi</button>'));
 }
 
 function routeName() { return (location.hash.replace(/^#\/?/, '').split('?')[0] || '').toLowerCase(); }
 async function route() {
-  closeModal(); await loadAccounts(); const r = routeName();
+  if (!state.sessionReady) return;
+  closeModal(); const r = routeName();
   if (!r) return landingPage();
-  if (r === 'login') return loginPage();
+  if (!state.user) {
+    if (r === 'login' || r === 'register') return loginPage(r === 'register');
+    location.hash = '#/login'; return;
+  }
+  if (r === 'login' || r === 'register') { location.hash = state.accounts.length ? '#/dashboard' : '#/numbers'; return; }
+  if (r === 'numbers') return numbersPage();
   if (r === 'otp') return otpPage();
   const protectedRoutes = { dashboard: dashboardPage, packages: packagesPage, store: storePage, transactions: transactionsPage, family: familyPage, circle: circlePage, rewards: rewardsPage, bookmarks: bookmarksPage, notifications: notificationsPage, support: supportPage };
-  if (protectedRoutes[r]) return protectedRoutes[r]();
+  if (protectedRoutes[r]) {
+    if (!state.accounts.length) { location.hash = '#/numbers'; return; }
+    return protectedRoutes[r]();
+  }
   landingPage();
+}
+
+let sessionRequest = null;
+async function bootstrapSession() {
+  if (sessionRequest) return sessionRequest;
+  state.sessionReady = false;
+  app.innerHTML = `<main class="auth-page"><section class="session-status" aria-live="polite">${brand()}${loading()}<p>Memeriksa sesi akun…</p></section></main>`;
+  sessionRequest = (async () => {
+    // Browser account data from older versions has no verified app owner.
+    try { localStorage.removeItem('accounts'); } catch { }
+    try {
+      const res = await fetch('/api/session', { credentials: 'same-origin' });
+      if (res.status === 401) resetSession();
+      else {
+        if (!res.ok) throw new Error('Sesi belum bisa diperiksa. Periksa koneksi dan coba lagi.');
+        const data = await res.json();
+        state.user = { id: data.user.id, username: data.user.username }; setAccounts(data.accounts);
+      }
+      state.sessionReady = true; route();
+    } catch {
+      app.innerHTML = `<main class="auth-page"><section class="session-status">${brand()}${emptyState('Belum bisa terhubung', 'Sesi akun belum bisa diperiksa. Periksa koneksi lalu coba lagi.', 'refresh', '<button class="btn btn-primary" data-action="retry-session">Coba lagi</button>')}</section></main>`;
+    } finally { sessionRequest = null; }
+  })();
+  return sessionRequest;
 }
 
 // Global event delegation
 document.addEventListener('click', async e => {
-  const t = e.target.closest('[data-action],[data-package-detail],[data-family-detail],[data-buy-package],[data-switch-account],[data-remove-account],[data-unsubscribe],[data-bookmark-remove],[data-bookmark-add],[data-family-limit],[data-family-remove],[data-family-add],[data-circle-invite],[data-circle-remove],[data-circle-accept],[data-store-tab]');
+  const t = e.target.closest('[data-action],[data-package-detail],[data-family-detail],[data-buy-package],[data-switch-account],[data-remove-account],[data-reauth-number],[data-unsubscribe],[data-bookmark-remove],[data-bookmark-add],[data-family-limit],[data-family-remove],[data-family-add],[data-circle-invite],[data-circle-remove],[data-circle-accept],[data-store-tab]');
   if (!t) return;
+  if (t.disabled) return;
   if (t.dataset.packageDetail) return openPackage(t.dataset.packageDetail);
   if (t.dataset.familyDetail) return openFamily(t.dataset.familyDetail);
   if (t.dataset.buyPackage) return checkoutModal(t.dataset.buyPackage);
-  if (t.dataset.switchAccount) return switchAccount(t.dataset.switchAccount);
-  if (t.dataset.removeAccount) { 
-    if (!confirm(`Hapus akun ${t.dataset.removeAccount}?`)) return; 
-    state.accounts = state.accounts.filter(a => a.number != t.dataset.removeAccount);
-    saveAccounts();
-    toast('Akun dihapus.', 'success'); 
-    route(); 
-    return; 
+  if (t.dataset.switchAccount) return switchAccount(t.dataset.switchAccount, t);
+  if (t.dataset.removeAccount) return removeAccount(t.dataset.removeAccount, t);
+  if (t.dataset.reauthNumber) {
+    state.reauthNumber = t.dataset.reauthNumber; closeModal();
+    if (routeName() === 'numbers') numbersPage(); else location.hash = '#/numbers';
+    return;
   }
   if (t.dataset.unsubscribe) return handleUnsubscribe(t.dataset.unsubscribe);
   if (t.dataset.bookmarkRemove) { 
     const b = JSON.parse(t.dataset.bookmarkRemove); 
-    const key = `bookmarks_${state.accounts.find(x => x.active)?.number}`;
+    const key = privateStorageKey('bookmarks');
     let items = JSON.parse(localStorage.getItem(key) || '[]');
     items = items.filter(x => !(x.family_code === b.family_code && x.variant_name === b.variant_name && x.order === b.order && x.is_enterprise === b.is_enterprise));
     localStorage.setItem(key, JSON.stringify(items));
@@ -588,7 +708,7 @@ document.addEventListener('click', async e => {
   }
   if (t.dataset.bookmarkAdd) { 
     const b = JSON.parse(t.dataset.bookmarkAdd); 
-    const key = `bookmarks_${state.accounts.find(x => x.active)?.number}`;
+    const key = privateStorageKey('bookmarks');
     let items = JSON.parse(localStorage.getItem(key) || '[]');
     if (!items.find(x => x.family_code === b.family_code && x.variant_name === b.variant_name && x.order === b.order && x.is_enterprise === b.is_enterprise)) {
       items.push(b);
@@ -607,21 +727,16 @@ document.addEventListener('click', async e => {
   if (t.dataset.circleAccept) { const d = JSON.parse(t.dataset.circleAccept); try { const r = await api('/api/circle/accept', { method: 'POST', body: JSON.stringify(d) }); if (r.status !== 'SUCCESS') throw new Error(r.message || 'Gagal menerima invitation.'); toast('Invitation diterima.', 'success'); circlePage(); } catch (err) { toast(err.message, 'error') } return; }
   if (t.dataset.storeTab) { $$('[data-store-tab]').forEach(x => x.classList.toggle('active', x === t)); $('#store-search').parentElement.style.display = t.dataset.storeTab === 'packages' ? 'block' : 'none'; $('#store-content').innerHTML = t.dataset.storeTab === 'packages' ? renderStorePackages(state.storePackages) : t.dataset.storeTab === 'families' ? renderFamilies() : t.dataset.storeTab === 'search' ? renderSearchCode() : renderSegments(); return; }
   const a = t.dataset.action;
-  if (a === 'login' || a === 'get-started') { closeModal(); location.hash = '#/login'; return; }
-  if (a === 'add-account') { closeModal(); location.hash = '#/login?from=dashboard'; return; }
-  if (a === 'open-dashboard') { location.hash = state.accounts.length ? '#/dashboard' : '#/login'; return; }
-  if (a === 'logout') { 
-    state.accounts.forEach(a => a.active = false);
-    saveAccounts();
-    toast('Berhasil logout.', 'success'); 
-    state.dashboard = null; 
-    location.hash = '#/login'; 
-    return; 
-  }
+  if (a === 'retry-session') return bootstrapSession();
+  if (a === 'retry-page') return route();
+  if (a === 'login' || a === 'get-started') { closeModal(); location.hash = state.user ? (state.accounts.length ? '#/dashboard' : '#/numbers') : '#/login'; return; }
+  if (a === 'add-account') { closeModal(); state.reauthNumber = ''; location.hash = '#/numbers?add=1'; return; }
+  if (a === 'open-dashboard') { location.hash = state.user ? (state.accounts.length ? '#/dashboard' : '#/numbers') : '#/login'; return; }
+  if (a === 'logout') return logout(t);
   if (a === 'accounts') return showAccountsModal();
   if (a === 'close-modal') return closeModal();
-  if (a === 'back-login') { location.hash = '#/login'; return; }
-  if (a === 'resend-otp') { try { await api('/api/auth/request-otp', { method: 'POST', body: JSON.stringify({ number: state.loginNumber }) }); toast('OTP dikirim ulang.', 'success'); } catch (err) { toast(err.message, 'error') } return; }
+  if (a === 'back-login') { location.hash = '#/numbers'; return; }
+  if (a === 'resend-otp') { t.disabled = true; try { await api('/api/auth/request-otp', { method: 'POST', body: JSON.stringify({ number: state.loginNumber }) }); state.otpTries = 5; if ($('#tries')) $('#tries').textContent = state.otpTries; toast('OTP dikirim ulang.', 'success'); } catch (err) { if (!err.handled) toast(err.message, 'error'); } finally { t.disabled = false; } return; }
   if (a === 'read-all') { try { await api('/api/notifications/read-all', { method: 'POST' }); toast('Notifikasi ditandai dibaca.', 'success'); notificationsPage(); } catch (err) { toast(err.message, 'error') } return; }
   if (a === 'search-option-code') { const code = $('#manual-code-input')?.value?.trim(); if (code) openPackage(code); return; }
   if (a === 'search-family-code') { const code = $('#manual-code-input')?.value?.trim(); if (code) openFamily(code); return; }
@@ -630,4 +745,4 @@ document.addEventListener('click', async e => {
 
 document.addEventListener('click', e => { if (e.target.classList.contains('modal-backdrop')) closeModal(); });
 window.addEventListener('hashchange', route);
-route();
+bootstrapSession();

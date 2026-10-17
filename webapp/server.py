@@ -7,38 +7,103 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
-from webapp.auth_store import AuthWeb
+from webapp.auth_store import AuthWeb, ProviderAccountError
+from webapp.session_auth import AppAuth, AccountAuthError, SESSION_COOKIE, SESSION_MAX_AGE
 
 STATIC_DIR = Path(__file__).parent / "static"
 app = FastAPI(title="myXL Web Paket", version="1.0.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def secure_cookie(req: Request) -> bool:
+    return bool(os.environ.get("VERCEL")) or req.url.scheme == "https"
+
+
+@app.middleware("http")
+async def account_session(req: Request, call_next):
+    if not req.url.path.startswith("/api/"):
+        return await call_next(req)
+
+    # All browser API calls use the same origin. Reject cross-site mutations,
+    # including login, before consulting a cookie or making provider requests.
+    if req.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = req.headers.get("origin")
+        try:
+            parsed = urlsplit(origin) if origin else None
+            foreign_origin = parsed is not None and (
+                parsed.scheme not in {"http", "https"}
+                or parsed.netloc.lower() != req.headers.get("host", "").lower()
+                or (secure_cookie(req) and parsed.scheme != "https")
+            )
+        except ValueError:
+            foreign_origin = True
+        if foreign_origin or req.headers.get("sec-fetch-site") == "cross-site":
+            return JSONResponse({"detail": "Request harus berasal dari halaman aplikasi ini."}, status_code=403,
+                                headers={"Cache-Control": "no-store"})
+
+    req.state.app_user = None
+    if req.url.path != "/api/cron/keepalive":
+        try:
+            req.state.app_user = await run_in_threadpool(
+                AppAuth.get_user, req.cookies.get(SESSION_COOKIE)
+            )
+        except AccountAuthError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=exc.status_code,
+                                headers={"Cache-Control": "no-store"})
+
+        public = (req.method, req.url.path) in {
+            ("GET", "/api/session"),
+            ("POST", "/api/session/login"),
+            ("POST", "/api/session/register"),
+            ("POST", "/api/session/logout"),
+        }
+        if not public and not req.state.app_user:
+            return JSONResponse({"detail": "Silakan masuk ke akun aplikasi terlebih dahulu.",
+                                 "code": "session_required"}, status_code=401,
+                                headers={"Cache-Control": "no-store"})
+
+    response = await call_next(req)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.exception_handler(AccountAuthError)
+async def account_auth_error(req: Request, exc: AccountAuthError):
+    return JSONResponse({"detail": str(exc)}, status_code=exc.status_code)
+
+
+@app.exception_handler(ProviderAccountError)
+async def provider_account_error(req: Request, exc: ProviderAccountError):
+    content = {"detail": str(exc)}
+    if exc.status_code == 409:
+        content["code"] = "provider_login_required"
+    return JSONResponse(content, status_code=exc.status_code)
+
+
+class AppCredentials(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=1, max_length=128)
+
+
 class OTPRequest(BaseModel):
-    number: str
+    number: str = Field(pattern=r"^628[0-9]{7,11}$")
 
 
 class OTPSubmit(BaseModel):
-    number: str
-    otp: str
+    number: str = Field(pattern=r"^628[0-9]{7,11}$")
+    otp: str = Field(pattern=r"^[0-9]{6}$")
 
 
 class AccountAction(BaseModel):
@@ -126,7 +191,9 @@ class ValidateMsisdnAction(BaseModel):
     msisdn: str
 
 
-def api_error(exc: Exception) -> HTTPException:
+def api_error(exc: Exception) -> Exception:
+    if isinstance(exc, (HTTPException, AccountAuthError, ProviderAccountError)):
+        return exc
     import traceback
     import sys
     print(f"[API_ERROR] {type(exc).__name__}: {exc}")
@@ -136,21 +203,74 @@ def api_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-from fastapi import FastAPI, HTTPException, Request
+def require_app_user(req: Request) -> dict:
+    user = getattr(req.state, "app_user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Silakan masuk ke akun aplikasi terlebih dahulu.")
+    return user
+
+
+def session_payload(user: dict) -> dict:
+    return {"user": user, "accounts": AuthWeb.list_accounts(user["id"])}
+
+
+def authenticated_response(req: Request, user: dict, token: str, status_code: int = 200):
+    response = JSONResponse(session_payload(user), status_code=status_code)
+    response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_MAX_AGE,
+                        httponly=True, secure=secure_cookie(req), samesite="lax", path="/")
+    return response
+
+
+@app.get("/api/session")
+def current_session(req: Request):
+    return session_payload(require_app_user(req))
+
+
+@app.post("/api/session/register", status_code=201)
+def register_app_account(req: Request, body: AppCredentials):
+    user, token = AppAuth.register(body.username, body.password)
+    AppAuth.logout(req.cookies.get(SESSION_COOKIE))
+    return authenticated_response(req, user, token, status_code=201)
+
+
+@app.post("/api/session/login")
+def login_app_account(req: Request, body: AppCredentials):
+    user, token = AppAuth.login(body.username, body.password)
+    AppAuth.logout(req.cookies.get(SESSION_COOKIE))
+    return authenticated_response(req, user, token)
+
+
+@app.post("/api/session/logout")
+def logout_app_account(req: Request):
+    AppAuth.logout(req.cookies.get(SESSION_COOKIE))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True,
+                           secure=secure_cookie(req), samesite="lax")
+    return response
+
+
+@app.get("/api/accounts")
+def linked_accounts(req: Request):
+    return {"accounts": AuthWeb.list_accounts(require_app_user(req)["id"])}
+
+
+@app.post("/api/accounts/{number}/activate")
+def activate_linked_account(req: Request, number: int):
+    return {"accounts": AuthWeb.activate_account(require_app_user(req)["id"], number)}
+
+
+@app.delete("/api/accounts/{number}")
+def remove_linked_account(req: Request, number: int):
+    return {"accounts": AuthWeb.remove_account(require_app_user(req)["id"], number)}
+
 
 def active_ctx(req: Request):
     try:
+        owner = require_app_user(req)
         num = req.headers.get("X-Number")
-        rt = req.headers.get("X-Refresh-Token")
-        sub_id = req.headers.get("X-Subscriber-Id", "")
-        sub_type = req.headers.get("X-Subscription-Type", "")
-        
-        if not num or not num.isdigit() or not rt:
-            raise HTTPException(status_code=401, detail="Belum login atau kredensial tidak lengkap.")
-            
-        user = AuthWeb.get_active(int(num), rt, sub_id, sub_type)
-        if not user:
-            raise HTTPException(status_code=401, detail="Sesi login tidak valid.")
+        if num is not None and (not num.isascii() or not num.isdigit() or not 10 <= len(num) <= 14):
+            raise HTTPException(status_code=422, detail="Nomor akun tidak valid.")
+        user = AuthWeb.get_active(owner["id"], int(num) if num else None)
         return user, AuthWeb.api_key, user.tokens
     except HTTPException:
         raise
@@ -184,7 +304,9 @@ def index():
 
 
 @app.post("/api/auth/request-otp")
-def request_otp(body: OTPRequest):
+def request_otp(req: Request, body: OTPRequest):
+    require_app_user(req)
+    AuthWeb.check_configuration()
     number = body.number.strip()
     if not number.startswith("628") or not number.isdigit() or not 10 <= len(number) <= 14:
         raise HTTPException(status_code=422, detail="Nomor harus diawali 628 dan terdiri dari 10–14 digit.")
@@ -199,7 +321,9 @@ def request_otp(body: OTPRequest):
 
 
 @app.post("/api/auth/submit-otp")
-def submit_otp_route(body: OTPSubmit):
+def submit_otp_route(req: Request, body: OTPSubmit):
+    owner = require_app_user(req)
+    AuthWeb.check_configuration()
     if not body.otp.isdigit() or len(body.otp) != 6:
         raise HTTPException(status_code=422, detail="OTP harus 6 digit.")
     try:
@@ -207,7 +331,7 @@ def submit_otp_route(body: OTPSubmit):
         tokens = submit_otp(AuthWeb.api_key, "SMS", body.number, body.otp)
         if not tokens:
             raise RuntimeError("OTP salah atau sudah kedaluwarsa.")
-        user = AuthWeb.add_login(int(body.number), tokens)
+        user = AuthWeb.add_login(owner["id"], int(body.number), tokens)
         return {
             "ok": True,
             "user": {
@@ -215,7 +339,7 @@ def submit_otp_route(body: OTPSubmit):
                 "subscriber_id": user.subscriber_id,
                 "subscription_type": user.subscription_type,
             },
-            "tokens": user.tokens
+            "accounts": AuthWeb.list_accounts(owner["id"])
         }
     except Exception as exc:
         raise api_error(exc)
